@@ -1,3 +1,5 @@
+[中文版](../cn/streaming_rpc.md)
+
 # Overview
 
 There are some scenarios when the client or server needs to send huge amount of data, which may grow over time or is too large to put into the RPC attachment. For example, it could be the replica or snapshot transmitting between different nodes in a distributed system. Although we could send data segmentation across multiple RPC between client and server, this will introduce the following problems:
@@ -40,9 +42,9 @@ struct StreamOptions
     // default: -1
     long idle_timeout_ms;
      
-    // How many messages at most passed to handler->on_received_messages
-    // default: 1
-    size_t max_messages_size;
+    // Maximum messages in batch passed to handler->on_received_messages
+    // default: 128
+    size_t messages_in_batch;
  
     // Handle input message, if handler is NULL, the remote side is not allowd to
     // write any message, who will get EBADF on writting

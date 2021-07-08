@@ -1,3 +1,5 @@
+[English version](../en/streaming_rpc.md)
+
 # 概述
 
 在一些应用场景中， client或server需要向对面发送大量数据，这些数据非常大或者持续地在产生以至于无法放在一个RPC的附件中。比如一个分布式系统的不同节点间传递replica或snapshot。client/server之间虽然可以通过多次RPC把数据切分后传输过去，但存在如下问题：
@@ -40,9 +42,9 @@ struct StreamOptions
     // default: -1
     long idle_timeout_ms;
      
-    // How many messages at most passed to handler->on_received_messages
-    // default: 1
-    size_t max_messages_size;
+    // Maximum messages in batch passed to handler->on_received_messages
+    // default: 128
+    size_t messages_in_batch;
  
     // Handle input message, if handler is NULL, the remote side is not allowd to
     // write any message, who will get EBADF on writting
