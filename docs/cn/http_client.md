@@ -2,47 +2,53 @@
 
 # 示例
 
-[example/http_c++](https://github.com/brpc/brpc/blob/master/example/http_c++/http_client.cpp)
+[example/http_c++](https://github.com/apache/brpc/blob/master/example/http_c++/http_client.cpp)
+
+# 关于h2
+
+brpc把HTTP/2协议统称为"h2"，不论是否加密。然而未开启ssl的HTTP/2连接在/connections中会按官方名称h2c显示，而开启ssl的会显示为h2。
+
+brpc中http和h2的编程接口基本没有区别。除非特殊说明，所有提到的http特性都同时对h2有效。
 
 # 创建Channel
 
-brpc::Channel可访问HTTP服务，ChannelOptions.protocol须指定为PROTOCOL_HTTP。
+brpc::Channel可访问http/h2服务，ChannelOptions.protocol须指定为PROTOCOL_HTTP或PROTOCOL_H2。
 
-设定为HTTP协议后，`Channel::Init`的第一个参数可为任意合法的URL。注意：允许任意URL是为了省去用户取出host和port的麻烦，`Channel::Init`只用其中的host及port，其他部分都会丢弃。
+设定好协议后，`Channel::Init`的第一个参数可为任意合法的URL。注意：允许任意URL是为了省去用户取出host和port的麻烦，`Channel::Init`只用其中的host及port，其他部分都会丢弃。
 
 ```c++
 brpc::ChannelOptions options;
-options.protocol = brpc::PROTOCOL_HTTP;
+options.protocol = brpc::PROTOCOL_HTTP;  // or brpc::PROTOCOL_H2
 if (channel.Init("www.baidu.com" /*any url*/, &options) != 0) {
      LOG(ERROR) << "Fail to initialize channel";
      return -1;
 }
 ```
 
-http channel也支持bns地址或其他NamingService。
+http/h2 channel也支持bns地址或其他NamingService。
 
 # GET
 
 ```c++
 brpc::Controller cntl;
 cntl.http_request().uri() = "www.baidu.com/index.html";  // 设置为待访问的URL
-channel.CallMethod(NULL, &cntl, NULL, NULL, NULL/*done*/);
+channel.CallMethod(nullptr, &cntl, nullptr, nullptr, nullptr/*done*/);
 ```
 
-HTTP和protobuf关系不大，所以除了Controller和done，CallMethod的其他参数均为NULL。如果要异步操作，最后一个参数传入done。
+HTTP/h2和protobuf关系不大，所以除了Controller和done，CallMethod的其他参数均为nullptr。如果要异步操作，最后一个参数传入done。
 
 `cntl.response_attachment()`是回复的body，类型也是butil::IOBuf。IOBuf可通过to_string()转化为std::string，但是需要分配内存并拷贝所有内容，如果关注性能，处理过程应直接支持IOBuf，而不要求连续内存。
 
 # POST
 
-默认的HTTP Method为GET，可设置为POST或[更多http method](https://github.com/brpc/brpc/blob/master/src/brpc/http_method.h)。待POST的数据应置入request_attachment()，它([butil::IOBuf](https://github.com/brpc/brpc/blob/master/src/butil/iobuf.h))可以直接append std::string或char*。
+默认的HTTP Method为GET，可设置为POST或[更多http method](https://github.com/apache/brpc/blob/master/src/brpc/http_method.h)。待POST的数据应置入request_attachment()，它([butil::IOBuf](https://github.com/apache/brpc/blob/master/src/butil/iobuf.h))可以直接append std::string或char*。
 
 ```c++
 brpc::Controller cntl;
 cntl.http_request().uri() = "...";  // 设置为待访问的URL
 cntl.http_request().set_method(brpc::HTTP_METHOD_POST);
 cntl.request_attachment().append("{\"message\":\"hello world!\"}");
-channel.CallMethod(NULL, &cntl, NULL, NULL, NULL/*done*/);
+channel.CallMethod(nullptr, &cntl, nullptr, nullptr, nullptr/*done*/);
 ```
 
 需要大量打印过程的body建议使用butil::IOBufBuilder，它的用法和std::ostringstream是一样的。对于有大量对象要打印的场景，IOBufBuilder简化了代码，效率也可能比c-style printf更高。
@@ -54,8 +60,20 @@ cntl.http_request().set_method(brpc::HTTP_METHOD_POST);
 butil::IOBufBuilder os;
 os << "A lot of printing" << printable_objects << ...;
 os.move_to(cntl.request_attachment());
-channel.CallMethod(NULL, &cntl, NULL, NULL, NULL/*done*/);
+channel.CallMethod(nullptr, &cntl, nullptr, nullptr, nullptr/*done*/);
 ```
+# 控制HTTP版本
+
+brpc的http行为默认是http/1.1。
+
+http/1.0相比http/1.1缺少长连接功能，brpc client与一些古老的http server通信时可能需要按如下方法设置为1.0。
+```c++
+cntl.http_request().set_version(1, 0);
+```
+
+设置http版本对h2无效，但是client收到的h2 response和server收到的h2 request中的version会被设置为(2, 0)。
+
+brpc server会自动识别HTTP版本，并相应回复，无需用户设置。
 
 # URL
 
@@ -69,7 +87,7 @@ URL的一般形式如下图：
 //   |           |               |       |                |    |            |                |
 //   |       userinfo           host    port              |    |          query          fragment
 //   |    \________________________________/\_____________|____|/ \__/        \__/
-// schema                 |                          |    |    |    |          |
+// scheme                 |                          |    |    |    |          |
 //                    authority                      |    |    |    |          |
 //                                                 path   |    |    interpretable as keys
 //                                                        |    |
@@ -83,20 +101,24 @@ URL的一般形式如下图：
 //                                               interpretable as extension
 ```
 
-在上面例子中可以看到，Channel.Init()和cntl.http_request().uri()被设置了相同的URL。为什么Channel为什么不直接利用Init时传入的URL，而需要给uri()再设置一次？
+在上面例子中可以看到，Channel.Init()和cntl.http_request().uri()被设置了相同的URL。为什么Channel不直接利用Init时传入的URL，而需要给uri()再设置一次？
 
 确实，在简单使用场景下，这两者有所重复，但在复杂场景中，两者差别很大，比如：
 
-- 访问名字服务(如BNS)下的多个http server。此时Channel.Init传入的是对该名字服务有意义的名称（如BNS中的节点名称），对uri()的赋值则是包含Host的完整URL(比如"www.foo.com/index.html?name=value")。
-- 通过http proxy访问目标server。此时Channel.Init传入的是proxy server的地址，但uri()填入的是目标server的URL。
+- 访问命名服务(如BNS)下的多个http/h2 server。此时Channel.Init传入的是对该命名服务有意义的名称（如BNS中的节点名称），对uri()的赋值则是包含Host的完整URL(比如"www.foo.com/index.html?name=value")。
+- 通过http/h2 proxy访问目标server。此时Channel.Init传入的是proxy server的地址，但uri()填入的是目标server的URL。
 
 ## Host字段
 
-若用户自己填写了host字段(http header)，框架不会修改。
+若用户自己填写了"host"字段(大小写不敏感)，框架不会修改。
 
 若用户没有填且URL中包含host，比如http://www.foo.com/path，则http request中会包含"Host: www.foo.com"。
 
-若用户没有填且URL不包含host，比如"/index.html?name=value"，则框架会以目标server的ip和port为Host，地址为10.46.188.39:8989的http server将会看到"Host: 10.46.188.39:8989"。
+若用户没有填且URL不包含host，比如"/index.html?name=value"，但如果Channel初始化的地址scheme为http(s)且包含域名，则框架会以域名作为Host，比如"http://www.foo.com"，该http server将会看到"Host: www.foo.com"。如果地址是"http://www.foo.com:8989"，则该http server将会看到"Host: www.foo.com:8989"。
+
+若用户没有填且URL不包含host，比如"/index.html?name=value"，如果Channel初始化的地址也不包含域名，则框架会以目标server的ip和port为Host，地址为10.46.188.39:8989的http server将会看到"Host: 10.46.188.39:8989"。
+
+对应的字段在h2中叫":authority"。
 
 # 常见设置
 
@@ -104,7 +126,7 @@ URL的一般形式如下图：
 
 访问名为Foo的header
 ```c++
-const std::string* value = cntl->http_request().GetHeader("Foo"); //不存在为NULL
+const std::string* value = cntl->http_request().GetHeader("Foo"); //不存在为nullptr
 ```
 设置名为Foo的header
 ```c++
@@ -112,13 +134,13 @@ cntl->http_request().SetHeader("Foo", "value");
 ```
 访问名为Foo的query
 ```c++
-const std::string* value = cntl->http_request().uri().GetQuery("Foo"); // 不存在为NULL
+const std::string* value = cntl->http_request().uri().GetQuery("Foo"); // 不存在为nullptr
 ```
 设置名为Foo的query
 ```c++
 cntl->http_request().uri().SetQuery("Foo", "value");
 ```
-设置HTTP方法 
+设置HTTP Method
 ```c++
 cntl->http_request().set_method(brpc::HTTP_METHOD_POST);
 ```
@@ -138,27 +160,30 @@ std::string str = cntl->request_attachment().to_string(); // 有拷贝
 设置body
 ```c++
 cntl->request_attachment().append("....");
-butil::IOBufBuilder os; os << "....";
+butil::IOBufBuilder os;
+os << "....";
 os.move_to(cntl->request_attachment());
 ```
 
 Notes on http header:
 
-- 根据[rfc2616](http://www.w3.org/Protocols/rfc2616/rfc2616-sec4.html#sec4.2)，header的field_name部分不区分大小写。brpc支持大小写不敏感，同时还能在打印时保持field_name大小写与用户设定的相同。
-- 如果HTTP头中出现了相同的field_name, 根据[rfc2616](http://www.w3.org/Protocols/rfc2616/rfc2616-sec4.html#sec4.2)，value应合并到一起，用逗号(,)分隔，用户自己确定如何理解和处理此类value.
+- 根据[rfc2616](http://www.w3.org/Protocols/rfc2616/rfc2616-sec4.html#sec4.2)，http header的field_name不区分大小写。brpc支持大小写不敏感，同时会在打印时保持用户传入的大小写。
+- 若http header中出现了相同的field_name, 根据[rfc2616](http://www.w3.org/Protocols/rfc2616/rfc2616-sec4.html#sec4.2)，value应合并到一起，用逗号(,)分隔，用户自行处理.
 - query之间用"&"分隔, key和value之间用"="分隔, value可以省略，比如key1=value1&key2&key3=value3中key2是合理的query，值为空字符串。
 
 # 查看HTTP消息
 
-打开[-http_verbose](http://brpc.baidu.com:8765/flags/http_verbose)即可在stderr看到所有的http request和response，注意这应该只用于线下调试，而不是线上程序。 
+打开[-http_verbose](http://localhost:8765/flags/http_verbose)即可看到所有的http/h2 request和response，注意这应该只用于线下调试，而不是线上程序。 
 
 # HTTP错误
 
-当Server返回的http status code不是2xx时，该次http访问被视为失败，client端会把`cntl->ErrorCode()`设置为EHTTP，用户可通过`cntl->http_response().status_code()`获得具体的http错误。同时server端可以把代表错误的html或json置入`cntl->response_attachment()`作为http body传递回来。
+当Server返回的http status code不是2xx时，该次http/h2访问被视为失败，client端会把`cntl->ErrorCode()`设置为EHTTP，用户可通过`cntl->http_response().status_code()`获得具体的http错误。同时server端可以把代表错误的html或json置入`cntl->response_attachment()`作为http body传递回来。
+
+如果Server也是brpc框架实现的服务，client端希望在http/h2失败时获取brpc Server返回的真实`ErrorCode`，而不是统一设置的`EHTTP`，则需要设置GFlag`-use_http_error_code=true`。
 
 # 压缩request body
 
-调用Controller::set_request_compress_type(baidu::rpc::COMPRESS_TYPE_GZIP)将尝试用gzip压缩http body。
+调用Controller::set_request_compress_type(brpc::COMPRESS_TYPE_GZIP)将尝试用gzip压缩http body。
 
 “尝试”指的是压缩有可能不发生，条件有：
 
@@ -172,7 +197,7 @@ Notes on http header:
 #include <brpc/policy/gzip_compress.h>
 ...
 const std::string* encoding = cntl->http_response().GetHeader("Content-Encoding");
-if (encoding != NULL && *encoding == "gzip") {
+if (encoding != nullptr && *encoding == "gzip") {
     butil::IOBuf uncompressed;
     if (!brpc::policy::GzipDecompress(cntl->response_attachment(), &uncompressed)) {
         LOG(ERROR) << "Fail to un-gzip response body";
@@ -199,7 +224,7 @@ brpc client支持在读取完body前就结束RPC，让用户在RPC结束后再�
    class ProgressiveReader {
    public:
        // Called when one part was read.
-       // Error returned is treated as *permenant* and the socket where the
+       // Error returned is treated as *permanent* and the socket where the
        // data was read will be closed.
        // A temporary error may be handled by blocking this function, which
        // may block the HTTP parsing on the socket.
@@ -229,3 +254,6 @@ brpc client支持在读取完body前就结束RPC，让用户在RPC结束后再�
 # 访问带认证的Server
 
 根据Server的认证方式生成对应的auth_data，并设置为http header "Authorization"的值。比如用的是curl，那就加上选项`-H "Authorization : <auth_data>"。`
+
+# 发送https请求
+https是http over SSL的简称，SSL并不是http特有的，而是对所有协议都有效。开启客户端SSL的一般性方法见[这里](client.md#开启ssl)。为方便使用，brpc会对https开头的uri自动开启SSL。

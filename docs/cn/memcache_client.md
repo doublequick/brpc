@@ -1,6 +1,6 @@
 [English version](../en/memcache_client.md)
 
-[memcached](http://memcached.org/)是常用的缓存服务，为了使用户更快捷地访问memcached并充分利用bthread的并发能力，brpc直接支持memcache协议。示例程序：[example/memcache_c++](https://github.com/brpc/brpc/tree/master/example/memcache_c++/)
+[memcached](http://memcached.org/)是常用的缓存服务，为了使用户更快捷地访问memcached并充分利用bthread的并发能力，brpc直接支持memcache协议。示例程序：[example/memcache_c++](https://github.com/apache/brpc/tree/master/example/memcache_c++/)
 
 **注意**：brpc只支持memcache的二进制协议。memcached在1.3前只有文本协议，但在当前看来支持的意义甚微。如果你的memcached早于1.3，升级版本。
 
@@ -41,12 +41,12 @@ if (!request.Set("hello", "world", 0xdeadbeef/*flags*/, 10/*expiring seconds*/, 
     LOG(FATAL) << "Fail to SET request";
     return -1;
 } 
-channel.CallMethod(NULL, &cntl, &request, &response, NULL/*done*/);
+channel.CallMethod(nullptr, &cntl, &request, &response, nullptr/*done*/);
 if (cntl.Failed()) {
     LOG(FATAL) << "Fail to access memcached, " << cntl.ErrorText();
     return -1;
 }  
-if (!response.PopSet(NULL)) {
+if (!response.PopSet(nullptr)) {
     LOG(FATAL) << "Fail to SET memcached, " << response.LastError();
     return -1;   
 }
@@ -55,7 +55,7 @@ if (!response.PopSet(NULL)) {
 
 上述代码的说明：
 
-- 请求类型必须为MemcacheRequest，回复类型必须为MemcacheResponse，否则CallMethod会失败。不需要stub，直接调用channel.CallMethod，method填NULL。
+- 请求类型必须为MemcacheRequest，回复类型必须为MemcacheResponse，否则CallMethod会失败。不需要stub，直接调用channel.CallMethod，method填nullptr。
 - 调用request.XXX()增加操作，本例XXX=Set，一个request多次调用不同的操作，这些操作会被同时送到memcached（常被称为pipeline模式）。
 - 依次调用response.PopXXX()弹出操作结果，本例XXX=Set，成功返回true，失败返回false，调用response.LastError()可获得错误信息。XXX必须和request的依次对应，否则失败。本例中若用PopGet就会失败，错误信息为“not a GET response"。
 - Pop结果独立于RPC结果。即使“不能把某个值设入memcached”，RPC可能还是成功的。RPC失败指连接断开，超时之类的。如果业务上认为要成功操作才算成功，那么你不仅要判RPC成功，还要判PopXXX是成功的。
@@ -97,6 +97,6 @@ bool PopVersion(std::string* version);
 
 # 访问memcached集群
 
-建立一个使用c_md5负载均衡算法的channel就能访问挂载在对应名字服务下的memcached集群了。注意每个MemcacheRequest应只包含一个操作或确保所有的操作是同一个key。如果request包含了多个操作，在当前实现下这些操作总会送向同一个server，假如对应的key分布在多个server上，那么结果就不对了，这个情况下你必须把一个request分开为多个，每个包含一个操作。
+建立一个使用c_md5负载均衡算法的channel就能访问挂载在对应命名服务下的memcached集群了。注意每个MemcacheRequest应只包含一个操作或确保所有的操作是同一个key。如果request包含了多个操作，在当前实现下这些操作总会送向同一个server，假如对应的key分布在多个server上，那么结果就不对了，这个情况下你必须把一个request分开为多个，每个包含一个操作。
 
 或者你可以沿用常见的[twemproxy](https://github.com/twitter/twemproxy)方案。这个方案虽然需要额外部署proxy，还增加了延时，但client端仍可以像访问单点一样的访问它。

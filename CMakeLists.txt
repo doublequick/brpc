@@ -1,333 +1,236 @@
-cmake_minimum_required(VERSION 2.8.10)
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+cmake_minimum_required(VERSION 3.16...3.28)
 project(brpc C CXX)
 
+option(WITH_GLOG "With glog" OFF)
+option(WITH_MESALINK "With MesaLink" OFF)
+option(WITH_BORINGSSL "With BoringSSL" OFF)
+option(WITH_DEBUG_SYMBOLS "With debug symbols" ON)
+option(WITH_THRIFT "With thrift framed protocol supported" OFF)
+option(WITH_FLATBUFFERS "With FlatBuffers message support (headers only)" OFF)
+option(WITH_BTHREAD_TRACER "With bthread tracer supported" OFF)
+option(WITH_SNAPPY "With snappy" OFF)
+option(WITH_RDMA "With RDMA" OFF)
+option(WITH_URMA "With URMA (openEuler Unified Remote Memory Access)" OFF)
+set(URMA_USE_MOCK "AUTO" CACHE STRING
+    "URMA mock mode: AUTO, ON, or OFF (OFF requires liburma)")
+set_property(CACHE URMA_USE_MOCK PROPERTY STRINGS AUTO ON OFF)
+option(DOWNLOAD_URMA_HEADERS
+       "Download UMDK headers when WITH_URMA is enabled and headers are absent"
+       ON)
+option(WITH_UBRING "With UB" OFF)
+option(WITH_DEBUG_BTHREAD_SCHE_SAFETY "With debugging bthread sche safety" OFF)
+option(WITH_DEBUG_LOCK "With debugging lock" OFF)
+option(WITH_CPU_FREQUENCY "Use CPU frequency for cpuwide_time" OFF)
+option(WITH_ASAN "With AddressSanitizer" OFF)
+option(BUILD_UNIT_TESTS "Whether to build unit tests" OFF)
+option(BUILD_FUZZ_TESTS "Whether to build fuzz tests" OFF)
+option(BUILD_BRPC_TOOLS "Whether to build brpc tools" ON)
+option(DOWNLOAD_GTEST "Download and build a fresh copy of googletest. Requires Internet access." ON)
+
+# Enable MACOSX_RPATH. Run "cmake --help-policy CMP0042" for policy details.
+if(POLICY CMP0042)
+    cmake_policy(SET CMP0042 NEW)
+endif()
+
+set(BRPC_VERSION 1.18.0)
+
+SET(CPACK_GENERATOR "DEB")
+SET(CPACK_DEBIAN_PACKAGE_MAINTAINER "brpc authors")
+INCLUDE(CPack)
+
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    # require at least gcc 4.8
-    if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 4.8)
-        message(FATAL_ERROR "GCC is too old, please install a newer version supporting C++11")
+    # require at least gcc 5.0
+    if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 5.0)
+        message(FATAL_ERROR "GCC is too old, please install a newer version supporting C++14")
     endif()
-elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    # require at least clang 3.3
-    if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 3.3)
-        message(FATAL_ERROR "Clang is too old, please install a newer version supporting C++11")
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    # require at least clang 3.5
+    if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 3.5)
+        message(FATAL_ERROR "Clang is too old, please install a newer version supporting C++14")
     endif()
 else()
     message(WARNING "You are using an unsupported compiler! Compilation has only been tested with Clang and GCC.")
 endif()
 
-option(BRPC_WITH_GLOG "With glog" OFF)
-option(DEBUG "Print debug logs" OFF)
-option(WITH_DEBUG_SYMBOLS "With debug symbols" ON)
-option(BUILD_UNIT_TESTS "Whether to build unit tests" OFF)
-
-set(WITH_GLOG_VAL "0")
-if(BRPC_WITH_GLOG)
-    set(WITH_GLOG_VAL "1")
-endif()
+set(BRPC_COMMON_COMPILE_OPTIONS)
+set(BRPC_COMMON_DEFINITIONS)
+set(BRPC_COMMON_INCLUDE_DIRS
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+set(BRPC_COMMON_LINK_OPTIONS)
+set(BRPC_CXX_STANDARD 14)
 
 if(WITH_DEBUG_SYMBOLS)
-    set(DEBUG_SYMBOL "-g")
+    list(APPEND BRPC_COMMON_COMPILE_OPTIONS -g)
 endif()
 
-configure_file(${CMAKE_SOURCE_DIR}/config.h.in ${CMAKE_SOURCE_DIR}/src/butil/config.h @ONLY)
+include(GNUInstallDirs)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/bRPCHeaders.cmake)
 
-set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 find_package(GFLAGS REQUIRED)
 
 execute_process(
-    COMMAND bash -c "grep \"namespace [_A-Za-z0-9]\\+ {\" ${GFLAGS_INCLUDE_PATH}/gflags/gflags_declare.h | head -1 | awk '{print $2}' | tr -d '\n'"
-    OUTPUT_VARIABLE GFLAGS_NS
-)
-if(${GFLAGS_NS} STREQUAL "GFLAGS_NAMESPACE")
-    execute_process(
-        COMMAND bash -c "grep \"#define GFLAGS_NAMESPACE [_A-Za-z0-9]\\+\" ${GFLAGS_INCLUDE_PATH}/gflags/gflags_declare.h | head -1 | awk '{print $3}' | tr -d '\n'"
-        OUTPUT_VARIABLE GFLAGS_NS
-    )
-endif()
-
-include_directories(
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_BINARY_DIR}
-)
-
-execute_process(
-    COMMAND bash -c "git rev-parse --short HEAD | tr -d '\n'"
+    COMMAND bash -c "${CMAKE_CURRENT_SOURCE_DIR}/tools/get_brpc_revision.sh ${CMAKE_CURRENT_SOURCE_DIR} | tr -d '\n'"
     OUTPUT_VARIABLE BRPC_REVISION
 )
+string(REPLACE "\\|" "|" BRPC_REVISION "${BRPC_REVISION}")
 
-set(CMAKE_CPP_FLAGS "-DBRPC_WITH_GLOG=${WITH_GLOG_VAL} -DGFLAGS_NS=${GFLAGS_NS}")
-set(CMAKE_CPP_FLAGS "${CMAKE_CPP_FLAGS} -DBTHREAD_USE_FAST_PTHREAD_MUTEX -D__const__= -D_GNU_SOURCE -DUSE_SYMBOLIZE -DNO_TCMALLOC -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS -DBRPC_REVISION=\\\"${BRPC_REVISION}\\\" -D__STRICT_ANSI__")
-set(CMAKE_CPP_FLAGS "${CMAKE_CPP_FLAGS} ${DEBUG_SYMBOL}")
-set(CMAKE_CXX_FLAGS "${CMAKE_CPP_FLAGS} -O2 -pipe -Wall -W -fPIC -fstrict-aliasing -Wno-invalid-offsetof -Wno-unused-parameter -fno-omit-frame-pointer")
-set(CMAKE_C_FLAGS "${CMAKE_CPP_FLAGS} -O2 -pipe -Wall -W -fPIC -fstrict-aliasing -Wno-unused-parameter -fno-omit-frame-pointer")
-
-macro(use_cxx11)
-if(CMAKE_VERSION VERSION_LESS "3.1.3")
-    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
-    endif()
-    if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
-    endif()
-else()
-    set(CMAKE_CXX_STANDARD 11)
-    set(CMAKE_CXX_STANDARD_REQUIRED ON)
+if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    list(APPEND BRPC_COMMON_COMPILE_OPTIONS
+        -Wno-deprecated-declarations
+        -Wno-inconsistent-missing-override
+    )
 endif()
-endmacro(use_cxx11)
 
-use_cxx11()
+list(APPEND BRPC_COMMON_DEFINITIONS
+    __const__=__unused__
+    _GNU_SOURCE
+    USE_SYMBOLIZE
+    NO_TCMALLOC
+    __STDC_FORMAT_MACROS
+    __STDC_LIMIT_MACROS
+    __STDC_CONSTANT_MACROS
+)
+
+if(WITH_ASAN)
+    list(APPEND BRPC_COMMON_COMPILE_OPTIONS -fsanitize=address)
+    list(APPEND BRPC_COMMON_LINK_OPTIONS -fsanitize=address)
+endif()
+
+list(APPEND BRPC_COMMON_COMPILE_OPTIONS
+    -O2
+    -pipe
+    -Wall
+    -W
+    -fPIC
+    -fstrict-aliasing
+    -Wno-unused-parameter
+    -fno-omit-frame-pointer
+    "-DBRPC_REVISION=\"${BRPC_REVISION}\""
+    $<$<COMPILE_LANGUAGE:CXX>:-Wno-invalid-offsetof>
+)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    #required by butil/crc32.cc to boost performance for 10x
-    if(NOT (CMAKE_CXX_COMPILER_VERSION VERSION_LESS 4.4))
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msse4 -msse4.2")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
+        # Preserve the libcontext workaround until its scope is verified.
+        list(APPEND BRPC_COMMON_COMPILE_OPTIONS $<$<COMPILE_LANGUAGE:CXX>:-fno-gcse>)
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "riscv64")
+        option(WITH_RISCV_ZBC "Enable RISC-V Zbc carry-less multiplication for CRC32C acceleration" OFF)
+        option(WITH_RISCV_ZVBC "Enable RISC-V Zvbc vector carry-less multiplication for CRC32C acceleration" OFF)
+        # The ISA controls RVV code paths throughout the project, not just CRC32C.
+        if(WITH_RISCV_ZVBC)
+            list(APPEND BRPC_COMMON_COMPILE_OPTIONS $<$<COMPILE_LANGUAGE:CXX>:-march=rv64gcv_zbc_zvbc>)
+        elseif(WITH_RISCV_ZBC)
+            list(APPEND BRPC_COMMON_COMPILE_OPTIONS $<$<COMPILE_LANGUAGE:CXX>:-march=rv64gc_zbc>)
+        else()
+            list(APPEND BRPC_COMMON_COMPILE_OPTIONS $<$<COMPILE_LANGUAGE:CXX>:-march=rv64gc>)
+        endif()
     endif()
     if(NOT (CMAKE_CXX_COMPILER_VERSION VERSION_LESS 7.0))
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-aligned-new")
+        list(APPEND BRPC_COMMON_COMPILE_OPTIONS $<$<COMPILE_LANGUAGE:CXX>:-Wno-aligned-new>)
     endif()
 endif()
 
-include(FindProtobuf)
-include(FindThreads)
+find_package(Protobuf REQUIRED)
+foreach(protobuf_include_dir IN LISTS Protobuf_INCLUDE_DIRS)
+    list(APPEND PROTOC_FLAGS -I${protobuf_include_dir})
+endforeach()
+if(Protobuf_VERSION VERSION_GREATER 4.21)
+    # required by absl
+    set(BRPC_CXX_STANDARD 17)
 
-find_path(LEVELDB_INCLUDE_PATH NAMES leveldb/db.h)
-find_library(LEVELDB_LIB NAMES leveldb)
-if ((NOT LEVELDB_INCLUDE_PATH) OR (NOT LEVELDB_LIB))
-    message(FATAL_ERROR "Fail to find leveldb")
-endif()
-
-if(BRPC_WITH_GLOG)
-    find_path(GLOG_INCLUDE_PATH NAMES glog/logging.h)
-    find_library(GLOG_LIB NAMES glog)
-    if((NOT GLOG_INCLUDE_PATH) OR (NOT GLOG_LIB))
-        message(FATAL_ERROR "Fail to find glog")
-    endif()
-    include_directories(${GLOG_INCLUDE_PATH})
-endif()
-
-find_library(PROTOC_LIB NAMES protoc)
-if(NOT PROTOC_LIB)
-    message(FATAL_ERROR "Fail to find protoc lib")
-endif()
-
-include_directories(
-        ${GFLAGS_INCLUDE_PATH}
-        ${PROTOBUF_INCLUDE_DIRS}
-        ${LEVELDB_INCLUDE_PATH}
-        )
-
-set(DYNAMIC_LIB
-    ${GFLAGS_LIBRARY}
-    ${PROTOBUF_LIBRARIES}
-    ${LEVELDB_LIB}
-    ${PROTOC_LIB}
-    ${CMAKE_THREAD_LIBS_INIT}
-    rt
-    ssl
-    crypto
-    dl
-    z
+    find_package(absl REQUIRED CONFIG)
+    set(protobuf_ABSL_USED_TARGETS
+        absl::absl_check
+        absl::absl_log
+        absl::algorithm
+        absl::base
+        absl::bind_front
+        absl::bits
+        absl::btree
+        absl::cleanup
+        absl::cord
+        absl::core_headers
+        absl::debugging
+        absl::die_if_null
+        absl::dynamic_annotations
+        absl::flags
+        absl::flat_hash_map
+        absl::flat_hash_set
+        absl::function_ref
+        absl::hash
+        absl::layout
+        absl::log_initialize
+        absl::log_globals
+        absl::log_severity
+        absl::memory
+        absl::node_hash_map
+        absl::node_hash_set
+        absl::random_distributions
+        absl::random_random
+        absl::span
+        absl::status
+        absl::statusor
+        absl::strings
+        absl::synchronization
+        absl::time
+        absl::type_traits
+        absl::utility
+        absl::variant
     )
+endif()
+find_package(Threads REQUIRED)
+
+list(REMOVE_DUPLICATES BRPC_COMMON_INCLUDE_DIRS)
+
+add_library(brpc_common_config INTERFACE)
+target_include_directories(brpc_common_config INTERFACE ${BRPC_COMMON_INCLUDE_DIRS})
+target_compile_definitions(brpc_common_config INTERFACE ${BRPC_COMMON_DEFINITIONS})
+target_compile_options(brpc_common_config INTERFACE ${BRPC_COMMON_COMPILE_OPTIONS})
+target_compile_features(brpc_common_config INTERFACE cxx_std_${BRPC_CXX_STANDARD})
+if(BRPC_COMMON_LINK_OPTIONS)
+    target_link_options(brpc_common_config INTERFACE ${BRPC_COMMON_LINK_OPTIONS})
+endif()
 
 # for *.so
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/output/lib)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/output/lib)
 # for *.a
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/output/lib)
-
-# list all source files
-set(BUTIL_SOURCES
-    ${CMAKE_SOURCE_DIR}/src/butil/third_party/dmg_fp/g_fmt.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/third_party/dmg_fp/dtoa_wrapper.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/third_party/dynamic_annotations/dynamic_annotations.c
-    ${CMAKE_SOURCE_DIR}/src/butil/third_party/icu/icu_utf.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/third_party/superfasthash/superfasthash.c
-    ${CMAKE_SOURCE_DIR}/src/butil/third_party/modp_b64/modp_b64.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/third_party/nspr/prtime.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/third_party/symbolize/demangle.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/third_party/symbolize/symbolize.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/third_party/snappy/snappy-sinksource.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/third_party/snappy/snappy-stubs-internal.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/third_party/snappy/snappy.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/third_party/murmurhash3/murmurhash3.cpp
-    ${CMAKE_SOURCE_DIR}/src/butil/arena.cpp
-    ${CMAKE_SOURCE_DIR}/src/butil/at_exit.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/atomicops_internals_x86_gcc.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/base64.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/big_endian.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/cpu.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/debug/alias.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/debug/asan_invalid_access.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/debug/crash_logging.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/debug/debugger.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/debug/debugger_posix.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/debug/dump_without_crashing.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/debug/proc_maps_linux.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/debug/stack_trace.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/debug/stack_trace_posix.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/environment.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/files/file.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/files/file_posix.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/files/file_enumerator.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/files/file_enumerator_posix.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/files/file_path.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/files/file_path_constants.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/files/memory_mapped_file.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/files/memory_mapped_file_posix.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/files/scoped_file.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/files/scoped_temp_dir.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/file_util.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/file_util_linux.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/file_util_posix.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/guid.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/guid_posix.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/hash.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/lazy_instance.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/location.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/md5.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/memory/aligned_memory.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/memory/ref_counted.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/memory/ref_counted_memory.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/memory/singleton.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/memory/weak_ptr.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/posix/file_descriptor_shuffle.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/posix/global_descriptors.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/rand_util.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/rand_util_posix.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/fast_rand.cpp
-    ${CMAKE_SOURCE_DIR}/src/butil/safe_strerror_posix.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/sha1_portable.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/strings/latin1_string_conversions.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/strings/nullable_string16.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/strings/safe_sprintf.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/strings/string16.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/strings/string_number_conversions.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/strings/string_split.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/strings/string_piece.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/strings/string_util.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/strings/string_util_constants.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/strings/stringprintf.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/strings/sys_string_conversions_posix.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/strings/utf_offset_string_conversions.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/strings/utf_string_conversion_utils.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/strings/utf_string_conversions.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/synchronization/cancellation_flag.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/synchronization/condition_variable_posix.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/synchronization/waitable_event_posix.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/threading/non_thread_safe_impl.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/threading/platform_thread_linux.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/threading/platform_thread_posix.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/threading/simple_thread.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/threading/thread_checker_impl.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/threading/thread_collision_warner.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/threading/thread_id_name_manager.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/threading/thread_local_posix.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/threading/thread_local_storage.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/threading/thread_local_storage_posix.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/threading/thread_restrictions.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/threading/watchdog.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/time/clock.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/time/default_clock.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/time/default_tick_clock.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/time/tick_clock.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/time/time.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/time/time_posix.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/version.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/logging.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/class_name.cpp
-    ${CMAKE_SOURCE_DIR}/src/butil/errno.cpp
-    ${CMAKE_SOURCE_DIR}/src/butil/find_cstr.cpp
-    ${CMAKE_SOURCE_DIR}/src/butil/status.cpp
-    ${CMAKE_SOURCE_DIR}/src/butil/string_printf.cpp
-    ${CMAKE_SOURCE_DIR}/src/butil/thread_local.cpp
-    ${CMAKE_SOURCE_DIR}/src/butil/unix_socket.cpp
-    ${CMAKE_SOURCE_DIR}/src/butil/endpoint.cpp
-    ${CMAKE_SOURCE_DIR}/src/butil/fd_utility.cpp
-    ${CMAKE_SOURCE_DIR}/src/butil/files/temp_file.cpp
-    ${CMAKE_SOURCE_DIR}/src/butil/files/file_watcher.cpp
-    ${CMAKE_SOURCE_DIR}/src/butil/time.cpp
-    ${CMAKE_SOURCE_DIR}/src/butil/zero_copy_stream_as_streambuf.cpp
-    ${CMAKE_SOURCE_DIR}/src/butil/crc32c.cc
-    ${CMAKE_SOURCE_DIR}/src/butil/containers/case_ignored_flat_map.cpp
-    ${CMAKE_SOURCE_DIR}/src/butil/iobuf.cpp
-    ${CMAKE_SOURCE_DIR}/src/butil/popen.cpp
-    )
-
-file(GLOB_RECURSE BVAR_SOURCES "${CMAKE_SOURCE_DIR}/src/bvar/*.cpp")
-file(GLOB_RECURSE BTHREAD_SOURCES "${CMAKE_SOURCE_DIR}/src/bthread/*.cpp")
-file(GLOB_RECURSE JSON2PB_SOURCES "${CMAKE_SOURCE_DIR}/src/json2pb/*.cpp")
-file(GLOB_RECURSE BRPC_SOURCES "${CMAKE_SOURCE_DIR}/src/brpc/*.cpp")
-
-set(MCPACK2PB_SOURCES
-    ${CMAKE_SOURCE_DIR}/src/mcpack2pb/field_type.cpp
-    ${CMAKE_SOURCE_DIR}/src/mcpack2pb/mcpack2pb.cpp
-    ${CMAKE_SOURCE_DIR}/src/mcpack2pb/parser.cpp
-    ${CMAKE_SOURCE_DIR}/src/mcpack2pb/serializer.cpp
-    )
-
-file(GLOB PROTOS "${CMAKE_SOURCE_DIR}/src/*.proto")
-list(APPEND PROTO_FLAGS -I${CMAKE_CURRENT_BINARY_DIR})
-foreach(PROTO ${PROTOS})
-    get_filename_component(PROTO_WE ${PROTO} NAME_WE)
-    list(APPEND PROTO_SRCS "${CMAKE_CURRENT_BINARY_DIR}/${PROTO_WE}.pb.cc")
-    execute_process(
-        COMMAND ${PROTOBUF_PROTOC_EXECUTABLE} ${PROTO_FLAGS} --cpp_out=${CMAKE_CURRENT_BINARY_DIR} --proto_path=${PROTOBUF_INCLUDE_DIR} --proto_path=${CMAKE_SOURCE_DIR}/src ${PROTO}
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    )
-endforeach()
-
-file(GLOB BRPC_PROTOS "src/brpc/*.proto")
-foreach(PROTO ${BRPC_PROTOS})
-    get_filename_component(PROTO_WE ${PROTO} NAME_WE)
-    list(APPEND PROTO_SRCS "${CMAKE_CURRENT_BINARY_DIR}/brpc/${PROTO_WE}.pb.cc")
-    execute_process(
-        COMMAND ${PROTOBUF_PROTOC_EXECUTABLE} ${PROTO_FLAGS} --cpp_out=${CMAKE_CURRENT_BINARY_DIR} --proto_path=${PROTOBUF_INCLUDE_DIR} --proto_path=${CMAKE_SOURCE_DIR}/src --proto_path=${CMAKE_SOURCE_DIR}/src/brpc/ ${PROTO}
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    )
-endforeach()
-
-file(GLOB BRPC_POLICY_PROTOS "src/brpc/policy/*.proto")
-foreach(PROTO ${BRPC_POLICY_PROTOS})
-    get_filename_component(PROTO_WE ${PROTO} NAME_WE)
-    list(APPEND PROTO_SRCS "${CMAKE_CURRENT_BINARY_DIR}/brpc/policy/${PROTO_WE}.pb.cc")
-    execute_process(
-        COMMAND ${PROTOBUF_PROTOC_EXECUTABLE} ${PROTO_FLAGS} --cpp_out=${CMAKE_CURRENT_BINARY_DIR} --proto_path=${PROTOBUF_INCLUDE_DIR} --proto_path=${CMAKE_SOURCE_DIR}/src --proto_path=${CMAKE_SOURCE_DIR}/src/brpc/policy ${PROTO}
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    )
-endforeach()
-
-set(SOURCES
-    ${BVAR_SOURCES}
-    ${BTHREAD_SOURCES}
-    ${JSON2PB_SOURCES}
-    ${MCPACK2PB_SOURCES}
-    ${BRPC_SOURCES}
-    ${PROTO_SRCS}
-    )
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/output/lib)
 
 add_subdirectory(src)
+add_subdirectory(test/cmake_link_dependencies EXCLUDE_FROM_ALL)
 if(BUILD_UNIT_TESTS)
+    enable_testing()
     add_subdirectory(test)
 endif()
-add_subdirectory(tools)
 
-file(COPY ${CMAKE_CURRENT_BINARY_DIR}/idl_options.pb.h
-     DESTINATION ${CMAKE_CURRENT_BINARY_DIR}/output/include)
-file(COPY ${CMAKE_CURRENT_BINARY_DIR}/brpc/
-        DESTINATION ${CMAKE_CURRENT_BINARY_DIR}/output/include/brpc/
-        FILES_MATCHING 
-        PATTERN "*.h"
-        PATTERN "*.hpp"
-        )
-file(COPY ${CMAKE_SOURCE_DIR}/src/
-        DESTINATION ${CMAKE_CURRENT_BINARY_DIR}/output/include/
-        FILES_MATCHING
-        PATTERN "*.h"
-        PATTERN "*.hpp"
-        )
-install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/output/include/
-        DESTINATION include
-        FILES_MATCHING
-        PATTERN "*.h"
-        PATTERN "*.hpp"
-        )
+if(BUILD_FUZZ_TESTS AND NOT BUILD_UNIT_TESTS)
+    message(FATAL_ERROR "BUILD_UNIT_TESTS must be enabled to build fuzz tests")
+endif()
+
+if(BUILD_BRPC_TOOLS)
+    add_subdirectory(tools)
+endif()
+
+# Install pkgconfig
+configure_file(cmake/brpc.pc.in ${PROJECT_BINARY_DIR}/brpc.pc @ONLY)
+install(FILES ${PROJECT_BINARY_DIR}/brpc.pc DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
